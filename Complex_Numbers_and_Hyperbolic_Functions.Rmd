@@ -1,0 +1,901 @@
+---
+title: "Complex Numbers and Hyperbolic Functions"
+subtitle: "A-level Further Maths, Years 1 and 2: interactive study guide"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+# Requires: install.packages(c("shiny", "rmarkdown"))
+# Open in RStudio and click "Run Document".
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(shiny)
+
+# ---------- Helpers: the Argand diagram ----------
+argand <- function(lim = 3, main = "") {
+  plot(NA, xlim = c(-lim, lim), ylim = c(-lim, lim), asp = 1,
+       xlab = "Re", ylab = "Im", main = main)
+  abline(h = 0, v = 0, col = "grey70")
+}
+unit_circle <- function(r = 1, col = "grey70", lty = 3, centre = 0) {
+  a <- seq(0, 2 * pi, length.out = 400)
+  lines(Re(centre) + r * cos(a), Im(centre) + r * sin(a), col = col, lty = lty)
+}
+zarrow <- function(z, col, lab = "", from = 0, lwd = 2) {
+  arrows(Re(from), Im(from), Re(z), Im(z), length = 0.08, col = col, lwd = lwd)
+  points(Re(z), Im(z), pch = 19, col = col, cex = 1.3)
+  if (nzchar(lab)) text(Re(z), Im(z), lab, pos = 3, col = col, font = 2)
+}
+fmt_z <- function(z) {
+  sprintf("%.3f %s %.3fi", Re(z), if (Im(z) < 0) "-" else "+", abs(Im(z)))
+}
+clean_roots <- function(r) complex(real = Re(r), imaginary = ifelse(abs(Im(r)) < 1e-8, 0, Im(r)))
+
+# ---------- Helpers: multiple-angle formulae ----------
+# Chebyshev coefficients: cos(n theta) = sum_p coef[p + 1] * cos(theta)^p
+cheb <- function(n) {
+  T0 <- 1; T1 <- c(0, 1)
+  if (n == 0) return(T0)
+  for (k in seq_len(n - 1)) {
+    T2 <- c(0, 2 * T1) - c(T0, 0, 0)
+    T0 <- T1; T1 <- T2
+  }
+  T1
+}
+poly_string <- function(coef, var = "c") {
+  out <- character(0)
+  for (p in rev(seq_along(coef) - 1)) {
+    a <- coef[p + 1]
+    if (a == 0) next
+    mag <- abs(a)
+    term <- if (p == 0) as.character(mag) else
+      paste0(if (mag != 1) mag else "", var, if (p > 1) paste0("^", p) else "")
+    out <- c(out, if (length(out) == 0) paste0(if (a < 0) "-" else "", term)
+                  else paste0(if (a < 0) " - " else " + ", term))
+  }
+  paste(out, collapse = "")
+}
+# cos^n(theta) as a combination of cos(m theta), from (z + 1/z)^n
+cos_power_string <- function(n) {
+  terms <- character(0)
+  for (k in 0:floor(n / 2)) {
+    m <- n - 2 * k; co <- choose(n, k)
+    terms <- c(terms, if (m == 0) format(co / 2) else
+      paste0(if (co != 1) paste0(co, " ") else "", "cos ", if (m != 1) m else "", "theta"))
+  }
+  sprintf("cos^%d theta = (1/%d) [ %s ]", n, 2^(n - 1), paste(terms, collapse = " + "))
+}
+cos_power_rhs <- function(n, th) {
+  s <- 0
+  for (k in 0:floor(n / 2)) {
+    m <- n - 2 * k
+    s <- s + if (m == 0) choose(n, k) / 2 else choose(n, k) * cos(m * th)
+  }
+  s / 2^(n - 1)
+}
+
+# ---------- Helpers: Osborn's rule ----------
+B0 <- 0.7
+osborn <- list(
+  "Pythagoras" = list(
+    trig = "cos^2 x + sin^2 x = 1", hyp = "cosh^2 x - sinh^2 x = 1",
+    tl = function(x) cos(x)^2 + sin(x)^2, tr = function(x) 1,
+    hl = function(x) cosh(x)^2 - sinh(x)^2, hr = function(x) 1),
+  "Double angle (sin)" = list(
+    trig = "sin 2x = 2 sin x cos x", hyp = "sinh 2x = 2 sinh x cosh x",
+    tl = function(x) sin(2 * x), tr = function(x) 2 * sin(x) * cos(x),
+    hl = function(x) sinh(2 * x), hr = function(x) 2 * sinh(x) * cosh(x)),
+  "Double angle (cos)" = list(
+    trig = "cos 2x = 1 - 2 sin^2 x", hyp = "cosh 2x = 1 + 2 sinh^2 x",
+    tl = function(x) cos(2 * x), tr = function(x) 1 - 2 * sin(x)^2,
+    hl = function(x) cosh(2 * x), hr = function(x) 1 + 2 * sinh(x)^2),
+  "Secant identity" = list(
+    trig = "1 + tan^2 x = sec^2 x", hyp = "1 - tanh^2 x = sech^2 x",
+    tl = function(x) 1 + tan(x)^2, tr = function(x) 1 / cos(x)^2,
+    hl = function(x) 1 - tanh(x)^2, hr = function(x) 1 / cosh(x)^2),
+  "Compound angle (B = 0.7)" = list(
+    trig = "cos(x + B) = cos x cos B - sin x sin B",
+    hyp = "cosh(x + B) = cosh x cosh B + sinh x sinh B",
+    tl = function(x) cos(x + B0), tr = function(x) cos(x) * cos(B0) - sin(x) * sin(B0),
+    hl = function(x) cosh(x + B0), hr = function(x) cosh(x) * cosh(B0) + sinh(x) * sinh(B0)),
+  "Triple angle (sin)" = list(
+    trig = "sin 3x = 3 sin x - 4 sin^3 x", hyp = "sinh 3x = 3 sinh x + 4 sinh^3 x",
+    tl = function(x) sin(3 * x), tr = function(x) 3 * sin(x) - 4 * sin(x)^3,
+    hl = function(x) sinh(3 * x), hr = function(x) 3 * sinh(x) + 4 * sinh(x)^3),
+  "Triple angle (cos)" = list(
+    trig = "cos 3x = 4 cos^3 x - 3 cos x", hyp = "cosh 3x = 4 cosh^3 x - 3 cosh x",
+    tl = function(x) cos(3 * x), tr = function(x) 4 * cos(x)^3 - 3 * cos(x),
+    hl = function(x) cosh(3 * x), hr = function(x) 4 * cosh(x)^3 - 3 * cosh(x)),
+  "Double angle (tan)" = list(
+    trig = "tan 2x = 2 tan x / (1 - tan^2 x)", hyp = "tanh 2x = 2 tanh x / (1 + tanh^2 x)",
+    tl = function(x) tan(2 * x), tr = function(x) 2 * tan(x) / (1 - tan(x)^2),
+    hl = function(x) tanh(2 * x), hr = function(x) 2 * tanh(x) / (1 + tanh(x)^2))
+)
+```
+
+This guide turns the complex numbers and hyperbolic functions of A-level Further Maths into pictures you can move. It covers the content common to the AQA, Edexcel and OCR Core Pure specifications: Year 1 (arithmetic, the Argand diagram, polynomial roots, loci) and Year 2 (exponential form, de Moivre, roots of unity, trigonometric series, hyperbolic functions). Move the sliders, **predict what you will see first**, then check. Each section ends with the proof idea behind the picture.
+
+One thread runs through the whole guide: **the exponential function is the master function.** Trigonometric functions are what you get from $e^{i\theta}$; hyperbolic functions are what you get from $e^{x}$. The section "The bridge" shows that they are the same functions seen along different axes of the complex plane.
+
+# Year 1: arithmetic and the Argand diagram
+
+## Addition is a translation; multiplication is a rotation and a scaling
+
+**The idea.** A complex number $z = x + iy$ is a point $(x, y)$, or an arrow from the origin. In modulus–argument form $z = r(\cos\theta + i\sin\theta)$ with $r = |z|$ and $\theta = \arg z$, taken in $(-\pi, \pi]$.
+
+- **Adding** $w$ moves $z$ along the arrow $w$: the parallelogram rule.
+- **Subtracting:** $z - w$ is the arrow *from* $w$ *to* $z$, so $|z - w|$ is the distance between them. This is the key to loci.
+- **Multiplying** by $w$ **multiplies the moduli and adds the arguments**: $|zw| = |z||w|$, $\arg(zw) = \arg z + \arg w$ (up to a multiple of $2\pi$).
+- **Multiplying by $i$** rotates by $90°$ anticlockwise, which is why $i^2 = -1$: two quarter turns make a half turn.
+- **Conjugating** reflects in the real axis, and $z z^* = |z|^2$ is real. That is why dividing works: $\frac{z}{w} = \frac{z w^*}{|w|^2}$.
+
+**Try this.** Choose "z w" and set $w = i$ (real part 0, imaginary part 1). Then try $w = 2i$. Predict where $zw$ lands before you look.
+
+```{r}
+inputPanel(
+  sliderInput("ar_zx", "z: real part", min = -3, max = 3, value = 2, step = 0.1),
+  sliderInput("ar_zy", "z: imaginary part", min = -3, max = 3, value = 1, step = 0.1),
+  sliderInput("ar_wx", "w: real part", min = -3, max = 3, value = 0.5, step = 0.1),
+  sliderInput("ar_wy", "w: imaginary part", min = -3, max = 3, value = 1.5, step = 0.1),
+  radioButtons("ar_op", "Operation", c("z + w", "z - w", "z w", "z / w", "z* (conjugate)", "i z"))
+)
+renderPlot({
+  z <- complex(real = input$ar_zx, imaginary = input$ar_zy)
+  w <- complex(real = input$ar_wx, imaginary = input$ar_wy)
+  op <- input$ar_op
+  res <- switch(op, "z + w" = z + w, "z - w" = z - w, "z w" = z * w,
+                "z / w" = if (Mod(w) > 1e-9) z / w else NA,
+                "z* (conjugate)" = Conj(z), "i z" = 1i * z)
+  lim <- max(3, 1.15 * max(Mod(c(z, w, res)), na.rm = TRUE))
+  par(mar = c(4.5, 4.5, 3, 1))
+  argand(lim, main = paste("Argand diagram:", op))
+  unit_circle()
+  zarrow(z, "steelblue", "z")
+  if (!op %in% c("z* (conjugate)", "i z")) zarrow(w, "darkgreen", "w")
+  if (op == "z + w") {
+    segments(Re(z), Im(z), Re(z + w), Im(z + w), lty = 2, col = "darkgreen")
+    segments(Re(w), Im(w), Re(z + w), Im(z + w), lty = 2, col = "steelblue")
+  }
+  if (op == "z - w") arrows(Re(w), Im(w), Re(z), Im(z), lty = 2, length = 0.08, col = "firebrick")
+  if (op == "z* (conjugate)") segments(Re(z), Im(z), Re(z), -Im(z), lty = 2, col = "grey40")
+  if (op == "i z") {
+    a <- seq(Arg(z), Arg(z) + pi / 2, length.out = 50)
+    lines(0.5 * Mod(z) * cos(a), 0.5 * Mod(z) * sin(a), col = "firebrick", lwd = 2)
+  }
+  if (!is.na(res)) zarrow(res, "firebrick", op, lwd = 3)
+}, height = 420)
+renderText({
+  z <- complex(real = input$ar_zx, imaginary = input$ar_zy)
+  w <- complex(real = input$ar_wx, imaginary = input$ar_wy)
+  op <- input$ar_op
+  if (op == "z / w" && Mod(w) < 1e-9) return("Division by zero is undefined: choose w != 0.")
+  res <- switch(op, "z + w" = z + w, "z - w" = z - w, "z w" = z * w, "z / w" = z / w,
+                "z* (conjugate)" = Conj(z), "i z" = 1i * z)
+  extra <- switch(op,
+    "z w" = sprintf("  Check: |z||w| = %.3f and arg z + arg w = %.1f deg (subtract 360 if needed).",
+                    Mod(z) * Mod(w), (Arg(z) + Arg(w)) * 180 / pi),
+    "z / w" = sprintf("  Check: |z|/|w| = %.3f and arg z - arg w = %.1f deg.",
+                      Mod(z) / Mod(w), (Arg(z) - Arg(w)) * 180 / pi),
+    "z - w" = sprintf("  The distance from w to z is |z - w| = %.3f.", Mod(z - w)),
+    "z* (conjugate)" = sprintf("  z z* = |z|^2 = %.3f, a real number.", Mod(z)^2),
+    "")
+  sprintf("z = %s (|z| = %.3f, arg %.1f deg);  w = %s;  %s = %s (modulus %.3f, arg %.1f deg).%s",
+          fmt_z(z), Mod(z), Arg(z) * 180 / pi, fmt_z(w), op, fmt_z(res), Mod(res),
+          Arg(res) * 180 / pi, extra)
+})
+```
+
+**Proof idea.** Write $z = r(\cos\alpha + i\sin\alpha)$ and $w = s(\cos\beta + i\sin\beta)$. Expanding,
+$$zw = rs\big[(\cos\alpha\cos\beta - \sin\alpha\sin\beta) + i(\sin\alpha\cos\beta + \cos\alpha\sin\beta)\big] = rs\big[\cos(\alpha+\beta) + i\sin(\alpha+\beta)\big].$$
+The compound angle formulae *are* the rule "arguments add". This is the first sign that complex numbers and trigonometry are the same subject.
+
+**Common slip.** $\arg z = \arctan(y/x)$ only in the first and fourth quadrants. For $z = -1 - i$, $\arctan(1) = \frac{\pi}{4}$, but $\arg z = -\frac{3\pi}{4}$. Always sketch the point first.
+
+## Roots of polynomials with real coefficients
+
+**The idea.** For $z^2 + bz + c = 0$ the discriminant $\Delta = b^2 - 4c$ decides everything. As $c$ increases past $b^2/4$, the two real roots **collide** on the real axis and then **split vertically** into a conjugate pair $-\frac b2 \pm \frac{\sqrt{4c - b^2}}{2}i$. The roots never disappear; they just leave the real line.
+
+**Try this.** Press play under the $c$ slider. Watch the two red roots slide together along the real axis, meet exactly when the parabola touches the $x$-axis, and then move apart vertically, always mirror images of each other. The grey curve is the path of the roots as $c$ runs over its whole range.
+
+```{r}
+inputPanel(
+  sliderInput("qd_b", "b in z^2 + bz + c", min = -4, max = 4, value = 2, step = 0.1),
+  sliderInput("qd_c", "c", min = -3, max = 6, value = -1, step = 0.1,
+              animate = animationOptions(interval = 200))
+)
+renderPlot({
+  b <- input$qd_b; cc <- input$qd_c
+  path <- unlist(lapply(seq(-3, 6, length.out = 400), function(c0) polyroot(c(c0, b, 1))))
+  r <- clean_roots(polyroot(c(cc, b, 1)))
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+  argand(5, main = sprintf("Roots of z^2 + %.1fz + %.1f", b, cc))
+  points(Re(path), Im(path), pch = 16, cex = 0.3, col = "grey60")
+  points(Re(r), Im(r), pch = 19, col = "firebrick", cex = 2)
+  x <- seq(-5, 5, length.out = 400)
+  plot(x, x^2 + b * x + cc, type = "l", lwd = 3, col = "steelblue", ylim = c(-5, 10),
+       xlab = "x", ylab = "y", main = "The real graph y = x^2 + bx + c")
+  abline(h = 0, v = 0, col = "grey70")
+  real_r <- Re(r)[Im(r) == 0]
+  points(real_r, rep(0, length(real_r)), pch = 19, col = "firebrick", cex = 1.6)
+}, height = 380)
+renderText({
+  b <- input$qd_b; cc <- input$qd_c; D <- b^2 - 4 * cc
+  r <- clean_roots(polyroot(c(cc, b, 1)))
+  kind <- if (abs(D) < 1e-9) "one repeated real root" else if (D > 0) "two distinct real roots" else
+    "a complex conjugate pair (the parabola misses the x-axis)"
+  sprintf("Discriminant b^2 - 4c = %.2f: %s.  Roots: %s and %s.  Sum = %.2f = -b; product = %.2f = c.",
+          D, kind, fmt_z(r[1]), fmt_z(r[2]), Re(sum(r)), Re(prod(r)))
+})
+```
+
+### Cubics: at least one real root, the rest in conjugate pairs
+
+**The idea.** If a polynomial has **real** coefficients, then taking conjugates of $p(z) = 0$ gives $p(z^*) = 0$. So non-real roots come in **conjugate pairs**, and a cubic must have at least one real root (its graph must cross the $x$-axis). Vieta's formulas link the roots $\alpha, \beta, \gamma$ of $z^3 + az^2 + bz + c$ to the coefficients:
+$$\alpha+\beta+\gamma = -a, \qquad \alpha\beta + \beta\gamma + \gamma\alpha = b, \qquad \alpha\beta\gamma = -c.$$
+
+**Try this.** Vary the coefficients and watch the root diagram stay symmetric about the real axis. Count the real roots and compare with the $x$-intercepts of the graph.
+
+```{r}
+inputPanel(
+  sliderInput("cu_a", "a in z^3 + az^2 + bz + c", min = -4, max = 4, value = -1, step = 0.1),
+  sliderInput("cu_b", "b", min = -4, max = 4, value = 1, step = 0.1),
+  sliderInput("cu_c", "c", min = -4, max = 4, value = 2, step = 0.1,
+              animate = animationOptions(interval = 200))
+)
+renderPlot({
+  a <- input$cu_a; b <- input$cu_b; cc <- input$cu_c
+  r <- clean_roots(polyroot(c(cc, b, a, 1)))
+  lim <- max(2, 1.2 * max(Mod(r)))
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+  argand(lim, main = "Roots are symmetric about the real axis")
+  for (z in r[Im(r) > 0]) segments(Re(z), Im(z), Re(z), -Im(z), lty = 2, col = "grey40")
+  points(Re(r), Im(r), pch = 19, col = "firebrick", cex = 2)
+  x <- seq(-lim, lim, length.out = 400)
+  plot(x, x^3 + a * x^2 + b * x + cc, type = "l", lwd = 3, col = "steelblue",
+       ylim = c(-10, 10), xlab = "x", ylab = "y", main = "y = x^3 + ax^2 + bx + c")
+  abline(h = 0, v = 0, col = "grey70")
+  real_r <- Re(r)[Im(r) == 0]
+  points(real_r, rep(0, length(real_r)), pch = 19, col = "firebrick", cex = 1.6)
+}, height = 380)
+renderText({
+  a <- input$cu_a; b <- input$cu_b; cc <- input$cu_c
+  r <- clean_roots(polyroot(c(cc, b, a, 1)))
+  pair <- r[1] * r[2] + r[2] * r[3] + r[3] * r[1]
+  sprintf("Roots: %s.   Sum = %.3f (= -a), sum of pairs = %.3f (= b), product = %.3f (= -c).",
+          paste(sapply(r, fmt_z), collapse = ";  "), Re(sum(r)), Re(pair), Re(prod(r)))
+})
+```
+
+**Exam technique.** Given one complex root $p + qi$ of a real cubic or quartic, you get $p - qi$ for free, and $(z - (p+qi))(z - (p-qi)) = z^2 - 2pz + (p^2 + q^2)$ is a **real** quadratic factor. Divide it out to find the rest.
+
+## Loci in the Argand diagram
+
+**The idea.** Since $|z - a|$ is the distance from $z$ to $a$ and $\arg(z - a)$ is the direction from $a$ to $z$, each locus is a geometric statement:
+
+| Equation | Meaning | Shape |
+|---|---|---|
+| $\lvert z - a\rvert = r$ | distance from $a$ is $r$ | circle, centre $a$, radius $r$ |
+| $\lvert z - a\rvert = \lvert z - b\rvert$ | equidistant from $a$ and $b$ | perpendicular bisector of $ab$ |
+| $\arg(z - a) = \theta$ | direction from $a$ is $\theta$ | half-line from $a$ ($a$ itself excluded) |
+| $\lvert z - a\rvert = k\lvert z - b\rvert$, $k \ne 1$ | distances in ratio $k$ | circle of Apollonius (extension) |
+
+**Try this.** Pick a locus, then tick the box to shade the region with "<". Predict which side gets shaded first. For the circle of Apollonius, set $k = 1$: the circle becomes the perpendicular bisector.
+
+```{r}
+inputPanel(
+  radioButtons("lo_type", "Locus",
+               c("|z - a| = r  (circle)" = "circle",
+                 "|z - a| = |z - b|  (perpendicular bisector)" = "bisector",
+                 "arg(z - a) = theta  (half-line)" = "arg",
+                 "|z - a| = k|z - b|  (Apollonius)" = "apol")),
+  checkboxInput("lo_region", "Shade the region ('<', or 0 <= arg <= theta)", value = FALSE),
+  sliderInput("lo_ax", "a: real part", min = -3, max = 3, value = 1, step = 0.25),
+  sliderInput("lo_ay", "a: imaginary part", min = -3, max = 3, value = 1, step = 0.25),
+  sliderInput("lo_bx", "b: real part", min = -3, max = 3, value = -1, step = 0.25),
+  sliderInput("lo_by", "b: imaginary part", min = -3, max = 3, value = -1, step = 0.25),
+  sliderInput("lo_r", "r (circle)", min = 0.25, max = 4, value = 1.5, step = 0.25),
+  sliderInput("lo_th", "theta in degrees (half-line)", min = -180, max = 180, value = 45, step = 5),
+  sliderInput("lo_k", "k (Apollonius)", min = 0.2, max = 3, value = 2, step = 0.1)
+)
+renderPlot({
+  a <- complex(real = input$lo_ax, imaginary = input$lo_ay)
+  b <- complex(real = input$lo_bx, imaginary = input$lo_by)
+  lim <- 5; xs <- seq(-lim, lim, length.out = 301); ys <- xs
+  Z <- outer(xs, ys, function(x, y) complex(real = x, imaginary = y))
+  th <- input$lo_th * pi / 180
+  G <- switch(input$lo_type,
+    circle   = Mod(Z - a) - input$lo_r,
+    bisector = Mod(Z - a) - Mod(Z - b),
+    apol     = Mod(Z - a) - input$lo_k * Mod(Z - b),
+    arg      = { d <- Arg(Z - a); ifelse(d >= min(0, th) & d <= max(0, th), -1, 1) })
+  par(mar = c(4.5, 4.5, 3, 1))
+  argand(lim, main = "Loci: distances and directions")
+  if (input$lo_region)
+    image(xs, ys, (G < 0) * 1, zlim = c(0, 1), add = TRUE,
+          col = c(rgb(0, 0, 0, 0), adjustcolor("steelblue", alpha.f = 0.35)))
+  if (input$lo_type == "arg") {
+    end <- a + 15 * exp(1i * th)
+    segments(Re(a), Im(a), Re(end), Im(end), lwd = 3, col = "firebrick")
+    if (input$lo_region) segments(Re(a), Im(a), Re(a) + 15, Im(a), lwd = 2, lty = 2, col = "firebrick")
+    points(Re(a), Im(a), pch = 21, bg = "white", col = "firebrick", cex = 1.8)
+  } else {
+    contour(xs, ys, G, levels = 0, add = TRUE, drawlabels = FALSE, lwd = 3, col = "firebrick")
+  }
+  points(Re(a), Im(a), pch = 19, cex = 1.3); text(Re(a), Im(a), "a", pos = 4, font = 2)
+  if (input$lo_type %in% c("bisector", "apol")) {
+    points(Re(b), Im(b), pch = 19, cex = 1.3); text(Re(b), Im(b), "b", pos = 4, font = 2)
+    segments(Re(a), Im(a), Re(b), Im(b), lty = 3)
+  }
+}, height = 460)
+renderText({
+  a <- complex(real = input$lo_ax, imaginary = input$lo_ay)
+  b <- complex(real = input$lo_bx, imaginary = input$lo_by)
+  k <- input$lo_k
+  switch(input$lo_type,
+    circle = sprintf("Circle, centre %s, radius %.2f. Cartesian: (x - %.2f)^2 + (y - %.2f)^2 = %.4f. Region '<' is the inside.",
+                     fmt_z(a), input$lo_r, Re(a), Im(a), input$lo_r^2),
+    bisector = if (Mod(a - b) < 1e-9) "a = b: every point is equidistant, so the 'locus' is the whole plane." else
+      sprintf("Squaring |z - a|^2 = |z - b|^2 gives a straight line: %.2fx + %.2fy = %.2f. Region '<' is the side nearer a.",
+              2 * (Re(b) - Re(a)), 2 * (Im(b) - Im(a)), Mod(b)^2 - Mod(a)^2),
+    arg = sprintf("Half-line from a = %s at %d degrees to the positive real direction. The point a is excluded (arg 0 is undefined).",
+                  fmt_z(a), input$lo_th),
+    apol = if (abs(k - 1) < 1e-9) "k = 1: the circle of Apollonius degenerates to the perpendicular bisector." else
+      sprintf("Circle with centre (a - k^2 b)/(1 - k^2) = %s and radius k|a - b|/|1 - k^2| = %.3f.",
+              fmt_z((a - k^2 * b) / (1 - k^2)), k * Mod(a - b) / abs(1 - k^2)))
+})
+```
+
+**Proof idea (Apollonius).** Square both sides: $|z - a|^2 = k^2|z - b|^2$. Writing $|z - a|^2 = (z - a)(z^* - a^*)$ and expanding, the $|z|^2$ terms have coefficient $1 - k^2$. If $k \ne 1$ you can divide by it and complete the square, which always gives a circle; if $k = 1$ the $|z|^2$ terms cancel and only a straight line is left.
+
+**Exam technique.** For "find the greatest value of $\arg z$ for $z$ on a circle", draw the **tangent** from the origin: the radius meets it at a right angle, so the answer comes from right-angled triangle trigonometry, not algebra.
+
+# Year 2: exponential form and Euler's formula
+
+**The idea.** Define $e^{i\theta}$ by putting $i\theta$ into the power series $e^x = \sum \frac{x^k}{k!}$. The powers of $i$ cycle $1, i, -1, -i$, so the real terms collect into the cosine series and the imaginary terms into the sine series:
+$$e^{i\theta} = \Big(1 - \tfrac{\theta^2}{2!} + \tfrac{\theta^4}{4!} - \cdots\Big) + i\Big(\theta - \tfrac{\theta^3}{3!} + \tfrac{\theta^5}{5!} - \cdots\Big) = \cos\theta + i\sin\theta.$$
+So every complex number can be written $z = re^{i\theta}$, and "multiply the moduli, add the arguments" becomes the index law $re^{i\alpha}\cdot se^{i\beta} = rs\,e^{i(\alpha+\beta)}$. At $\theta = \pi$: $e^{i\pi} = -1$.
+
+**Try this.** Each term of the series is the previous one **turned through $90°$** (multiplied by $i$) and **shrunk** (divided by $k$). Increase the number of terms and watch the path spiral in onto the point $e^{i\theta}$ on the unit circle. Set $\theta = \pi$ to see Euler's identity being built.
+
+```{r}
+inputPanel(
+  sliderInput("ex_th", "theta (in multiples of pi)", min = -2, max = 2, value = 1, step = 0.05),
+  sliderInput("ex_N", "Number of terms of the series", min = 1, max = 25, value = 4, step = 1,
+              animate = animationOptions(interval = 500))
+)
+renderPlot({
+  th <- input$ex_th * pi; N <- input$ex_N
+  terms <- (1i * th)^(0:(N - 1)) / factorial(0:(N - 1))
+  path <- c(0, cumsum(terms))
+  lim <- max(1.5, 1.1 * max(Mod(path)))
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+  argand(lim, main = sprintf("Partial sums of e^(i theta), %d terms", N))
+  unit_circle(lty = 1)
+  cols <- hcl.colors(N, "Viridis")
+  for (k in seq_len(N))
+    arrows(Re(path[k]), Im(path[k]), Re(path[k + 1]), Im(path[k + 1]),
+           length = 0.07, lwd = 2, col = cols[k])
+  points(cos(th), sin(th), pch = 19, col = "firebrick", cex = 1.8)
+  Ns <- 1:25
+  err <- sapply(Ns, function(n) Mod(sum((1i * th)^(0:(n - 1)) / factorial(0:(n - 1))) - exp(1i * th)))
+  plot(Ns, pmax(err, 1e-16), log = "y", type = "b", pch = 19, cex = 0.6,
+       xlab = "number of terms", ylab = "distance from e^(i theta)",
+       main = "The series converges (factorials win)")
+  points(N, max(err[N], 1e-16), pch = 19, col = "firebrick", cex = 1.8)
+}, height = 380)
+renderText({
+  th <- input$ex_th * pi; N <- input$ex_N
+  S <- sum((1i * th)^(0:(N - 1)) / factorial(0:(N - 1)))
+  sprintf("Partial sum = %s.   e^(i theta) = cos theta + i sin theta = %s.",
+          fmt_z(S), fmt_z(exp(1i * th)))
+})
+```
+
+**Two consequences you must know.** Adding and subtracting $e^{i\theta}$ and $e^{-i\theta}$:
+$$\cos\theta = \frac{e^{i\theta} + e^{-i\theta}}{2}, \qquad \sin\theta = \frac{e^{i\theta} - e^{-i\theta}}{2i}.$$
+Put a real $x$ in place of $i\theta$ and you get exactly the definitions of $\cosh x$ and $\sinh x$ (see "Hyperbolic functions" below). Keep these two lines in mind: they are the bridge for the rest of the guide.
+
+# De Moivre's theorem
+
+## Powers spiral
+
+**The idea.** $\big(r e^{i\theta}\big)^n = r^n e^{in\theta}$, that is,
+$$\big[r(\cos\theta + i\sin\theta)\big]^n = r^n(\cos n\theta + i\sin n\theta).$$
+Each extra power multiplies the modulus by $r$ and turns by $\theta$. If $r > 1$ the powers spiral out, if $r < 1$ they spiral in, and if $r = 1$ they walk round the unit circle.
+
+**Try this.** Set $r = 1$ and $\arg z = 45°$: after how many powers are you back to 1? Now try $\arg z = 50°$.
+
+```{r}
+inputPanel(
+  sliderInput("dm_r", "|z| = r", min = 0.9, max = 1.1, value = 1.03, step = 0.01),
+  sliderInput("dm_th", "arg z (degrees)", min = -180, max = 180, value = 30, step = 1),
+  sliderInput("dm_n", "Highest power n", min = 1, max = 40, value = 12, step = 1,
+              animate = animationOptions(interval = 300))
+)
+renderPlot({
+  r <- input$dm_r; th <- input$dm_th * pi / 180; n <- input$dm_n
+  zk <- (r * exp(1i * th))^(0:n)
+  lim <- max(1.5, 1.1 * max(Mod(zk)))
+  par(mar = c(4.5, 4.5, 3, 1))
+  argand(lim, main = sprintf("Powers z^0, z^1, ..., z^%d", n))
+  unit_circle()
+  lines(Re(zk), Im(zk), col = "grey50")
+  points(Re(zk), Im(zk), pch = 19, col = hcl.colors(n + 1, "Viridis"), cex = 1.2)
+  zarrow(zk[n + 1], "firebrick", sprintf("z^%d", n), lwd = 3)
+}, height = 420)
+renderText({
+  r <- input$dm_r; th <- input$dm_th * pi / 180; n <- input$dm_n
+  sprintf("z^%d = r^n(cos n theta + i sin n theta) = %.3f(cos %d deg + i sin %d deg) = %s.   Direct calculation: %s.",
+          n, r^n, n * input$dm_th, n * input$dm_th,
+          fmt_z(r^n * (cos(n * th) + 1i * sin(n * th))), fmt_z((r * exp(1i * th))^n))
+})
+```
+
+**Proof idea.** By induction on $n$: if it holds for $n$, multiply by $\cos\theta + i\sin\theta$ and use the compound angle formulae (as in the first section) to get it for $n+1$. Extend to negative $n$ using $\frac{1}{\cos\theta + i\sin\theta} = \cos\theta - i\sin\theta$.
+
+## Multiple-angle formulae, and powers of cos in terms of multiple angles
+
+**The idea.** De Moivre runs in two directions.
+
+- **$\cos n\theta$ in powers of $\cos\theta$.** Expand $(\cos\theta + i\sin\theta)^n$ with the binomial theorem, take the real part, and replace $\sin^2\theta$ by $1 - \cos^2\theta$. For example $\cos 3\theta = 4\cos^3\theta - 3\cos\theta$.
+- **$\cos^n\theta$ in multiple angles.** With $z = e^{i\theta}$, $z + \frac1z = 2\cos\theta$ and $z^k + \frac{1}{z^k} = 2\cos k\theta$. Expand $\big(z + \frac1z\big)^n$ and pair the terms from each end. This is how you integrate $\cos^4\theta$ or $\sin^5\theta$.
+
+**Try this.** Choose a direction and $n$. The plot checks the formula: the curve is the left-hand side, the dots are the right-hand side.
+
+```{r}
+inputPanel(
+  radioButtons("ma_dir", "Direction",
+               c("cos(n theta) in powers of cos theta" = "cheb",
+                 "cos^n theta in multiple angles" = "power")),
+  sliderInput("ma_n", "n", min = 2, max = 7, value = 3, step = 1)
+)
+renderPlot({
+  n <- input$ma_n; th <- seq(0, 2 * pi, length.out = 600); thp <- seq(0, 2 * pi, length.out = 60)
+  par(mar = c(4.5, 4.5, 3, 1))
+  if (input$ma_dir == "cheb") {
+    co <- cheb(n)
+    rhs <- sapply(cos(thp), function(c0) sum(co * c0^(0:n)))
+    plot(th, cos(n * th), type = "l", lwd = 3, col = "steelblue", ylim = c(-1.1, 1.1),
+         xlab = "theta", ylab = "value", main = sprintf("cos(%d theta) (curve) vs polynomial in cos theta (dots)", n))
+  } else {
+    rhs <- cos_power_rhs(n, thp)
+    plot(th, cos(th)^n, type = "l", lwd = 3, col = "steelblue", ylim = c(-1.1, 1.1),
+         xlab = "theta", ylab = "value", main = sprintf("cos^%d theta (curve) vs multiple-angle form (dots)", n))
+  }
+  points(thp, rhs, pch = 19, col = "firebrick")
+  abline(h = 0, col = "grey70")
+}, height = 340)
+renderText({
+  n <- input$ma_n
+  if (input$ma_dir == "cheb") {
+    sprintf("cos %d theta = %s,   where c = cos theta.", n, poly_string(cheb(n)))
+  } else {
+    paste0(cos_power_string(n), if (n %% 2 == 0)
+      "   (Integrate over a full period: only the constant term survives.)" else "")
+  }
+})
+```
+
+**Proof idea for the second direction ($n = 4$).**
+$$\Big(z + \tfrac1z\Big)^4 = \Big(z^4 + \tfrac{1}{z^4}\Big) + 4\Big(z^2 + \tfrac{1}{z^2}\Big) + 6
+\;\Longrightarrow\; 16\cos^4\theta = 2\cos 4\theta + 8\cos 2\theta + 6.$$
+So $\cos^4\theta = \frac18(\cos 4\theta + 4\cos 2\theta + 3)$ and $\int_0^{\pi/2}\cos^4\theta\,d\theta = \frac{3\pi}{16}$. For sines use $z - \frac1z = 2i\sin\theta$ and $z^k - \frac{1}{z^k} = 2i\sin k\theta$.
+
+# Roots of complex numbers
+
+**The idea.** To solve $z^n = w$ with $w = Re^{i\phi}$, write $w = Re^{i(\phi + 2k\pi)}$ for every integer $k$ *before* taking the $n$th root:
+$$z = R^{1/n}\,e^{i(\phi + 2k\pi)/n}, \qquad k = 0, 1, \dots, n-1.$$
+The $n$ roots sit on a circle of radius $R^{1/n}$ and form a **regular $n$-gon**, spaced $\frac{2\pi}{n}$ apart. When $w = 1$ these are the **$n$th roots of unity** $1, \omega, \omega^2, \dots, \omega^{n-1}$ with $\omega = e^{2\pi i/n}$.
+
+**Try this.** Tick "add head to tail". The arrows always close up into a loop that returns to the origin: the roots sum to zero.
+
+```{r}
+inputPanel(
+  sliderInput("rt_n", "n in z^n = w", min = 2, max = 12, value = 5, step = 1),
+  sliderInput("rt_R", "|w|", min = 0.2, max = 8, value = 1, step = 0.1),
+  sliderInput("rt_phi", "arg w (degrees)", min = -180, max = 180, value = 0, step = 5),
+  checkboxInput("rt_sum", "Add the roots head to tail", value = FALSE)
+)
+renderPlot({
+  n <- input$rt_n; R <- input$rt_R; phi <- input$rt_phi * pi / 180
+  rho <- R^(1 / n); k <- 0:(n - 1)
+  roots <- rho * exp(1i * (phi + 2 * pi * k) / n)
+  path <- c(0, cumsum(roots))
+  lim <- max(1.5, 1.3 * rho, if (input$rt_sum) 1.1 * max(Mod(path)) else 0)
+  par(mar = c(4.5, 4.5, 3, 1))
+  argand(lim, main = sprintf("The %d roots of z^%d = %.1f e^(i %d deg)", n, n, R, input$rt_phi))
+  unit_circle(rho, lty = 2)
+  polygon(Re(roots), Im(roots), border = "steelblue", col = adjustcolor("steelblue", alpha.f = 0.12))
+  for (j in seq_len(n)) zarrow(roots[j], "steelblue", paste0("k=", j - 1))
+  if (input$rt_sum) {
+    for (j in seq_len(n))
+      arrows(Re(path[j]), Im(path[j]), Re(path[j + 1]), Im(path[j + 1]),
+             length = 0.08, lwd = 2, col = "firebrick")
+  }
+}, height = 440)
+renderText({
+  n <- input$rt_n; R <- input$rt_R; phi <- input$rt_phi * pi / 180
+  roots <- R^(1 / n) * exp(1i * (phi + 2 * pi * (0:(n - 1))) / n)
+  sprintf("Modulus of each root: |w|^(1/n) = %.4f; spacing 360/n = %.1f deg.  Sum of roots = %s (zero, up to rounding).  Product = %s = (-1)^(n+1) w.",
+          R^(1 / n), 360 / n, fmt_z(sum(roots)), fmt_z(prod(roots)))
+})
+```
+
+**Proof idea (sum is zero).** For $n \ge 2$, $1 + \omega + \cdots + \omega^{n-1} = \frac{\omega^n - 1}{\omega - 1} = 0$ because $\omega^n = 1$ and $\omega \ne 1$. Geometrically, rotating the polygon by $\frac{2\pi}{n}$ leaves it unchanged, so its "centre of mass" must be fixed by the rotation: the only such point is the origin. Equivalently, the roots of $z^n - w$ sum to minus the coefficient of $z^{n-1}$, which is $0$.
+
+# Summing trigonometric series with geometric series
+
+**The idea.** To find $C = \sum_{k=0}^{n-1}\cos k\theta$, add $i$ times its partner $S = \sum_{k=0}^{n-1}\sin k\theta$:
+$$C + iS = \sum_{k=0}^{n-1} e^{ik\theta} = \frac{e^{in\theta} - 1}{e^{i\theta} - 1} = e^{i(n-1)\theta/2}\,\frac{\sin(n\theta/2)}{\sin(\theta/2)}.$$
+The last step factors out half-angles: $e^{i\alpha} - 1 = e^{i\alpha/2}\cdot 2i\sin(\alpha/2)$. Taking real parts,
+$$\sum_{k=0}^{n-1}\cos k\theta = \frac{\sin(n\theta/2)\cos\big((n-1)\theta/2\big)}{\sin(\theta/2)}.$$
+
+**Try this.** The left picture adds unit arrows, each turned $\theta$ further than the last. They walk round a circle of radius $\frac{1}{2\sin(\theta/2)}$, and the red arrow is $C + iS$. Its horizontal shadow is the sum of the cosines. On the right, the dots (direct sum) lie on the curve (closed form).
+
+```{r}
+inputPanel(
+  sliderInput("ss_n", "Number of terms n", min = 1, max = 30, value = 8, step = 1,
+              animate = animationOptions(interval = 400)),
+  sliderInput("ss_th", "theta (degrees)", min = 5, max = 179, value = 40, step = 1)
+)
+renderPlot({
+  n <- input$ss_n; th <- input$ss_th * pi / 180
+  path <- c(0, cumsum(exp(1i * (0:(n - 1)) * th)))
+  centre <- -1 / (exp(1i * th) - 1); rad <- 1 / (2 * sin(th / 2))
+  lim <- max(1.5, 1.1 * max(Mod(path)))
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+  argand(lim, main = "C + iS as a chain of unit arrows")
+  unit_circle(rad, centre = centre)
+  for (k in seq_len(n))
+    arrows(Re(path[k]), Im(path[k]), Re(path[k + 1]), Im(path[k + 1]),
+           length = 0.06, col = "steelblue", lwd = 2)
+  zarrow(path[n + 1], "firebrick", "C + iS", lwd = 3)
+  segments(0, 0, Re(path[n + 1]), 0, lwd = 4, col = adjustcolor("firebrick", 0.5))
+  ths <- seq(0.05, 2 * pi - 0.05, length.out = 500)
+  closed <- sin(n * ths / 2) * cos((n - 1) * ths / 2) / sin(ths / 2)
+  dots <- seq(0.1, 2 * pi - 0.1, length.out = 40)
+  direct <- sapply(dots, function(t) sum(cos((0:(n - 1)) * t)))
+  plot(ths, closed, type = "l", lwd = 2, col = "steelblue", xlab = "theta (radians)",
+       ylab = "C", main = sprintf("Sum of cos k theta, k = 0..%d", n - 1))
+  points(dots, direct, pch = 19, cex = 0.8, col = "firebrick")
+  abline(v = th, lty = 3); abline(h = 0, col = "grey70")
+}, height = 380)
+renderText({
+  n <- input$ss_n; th <- input$ss_th * pi / 180; k <- 0:(n - 1)
+  sprintf("Direct: C = %.4f, S = %.4f.   Closed forms: C = %.4f, S = sin(n theta/2) sin((n-1)theta/2)/sin(theta/2) = %.4f.",
+          sum(cos(k * th)), sum(sin(k * th)),
+          sin(n * th / 2) * cos((n - 1) * th / 2) / sin(th / 2),
+          sin(n * th / 2) * sin((n - 1) * th / 2) / sin(th / 2))
+})
+```
+
+**Why the arrows lie on a circle.** Each step turns by the same angle, so consecutive chords subtend equal angles at a common centre: the chain is inscribed in a circle. When $n\theta$ is a multiple of $2\pi$ the chain closes and the sum is zero, which is the roots-of-unity fact again.
+
+# Hyperbolic functions
+
+## Definitions and graphs
+
+**The idea.** Split $e^x$ into its even and odd parts:
+$$\cosh x = \frac{e^x + e^{-x}}{2}, \qquad \sinh x = \frac{e^x - e^{-x}}{2}, \qquad \tanh x = \frac{\sinh x}{\cosh x} = \frac{e^{2x} - 1}{e^{2x} + 1}.$$
+Compare with $\cos\theta = \frac{e^{i\theta} + e^{-i\theta}}{2}$ and $\sin\theta = \frac{e^{i\theta} - e^{-i\theta}}{2i}$: the same recipe with the $i$ removed. Then $\cosh x + \sinh x = e^x$ and
+$$\cosh^2 x - \sinh^2 x = \frac{(e^x + e^{-x})^2 - (e^x - e^{-x})^2}{4} = 1.$$
+
+**Try this.** Show the two exponential halves: $\cosh$ is their average, a hanging chain (catenary). For large $x$, $\cosh x \approx \sinh x \approx \frac12e^x$. The right panel shows the gap between $\cosh^2$ and $\sinh^2$ is always exactly 1.
+
+```{r}
+inputPanel(
+  radioButtons("hy_f", "Function", c("cosh", "sinh", "tanh"), inline = TRUE),
+  checkboxInput("hy_parts", "Show e^x/2 and e^(-x)/2", value = TRUE),
+  sliderInput("hy_x", "x", min = -3, max = 3, value = 1, step = 0.05,
+              animate = animationOptions(interval = 150))
+)
+renderPlot({
+  x <- seq(-3, 3, length.out = 500); f <- get(input$hy_f); x0 <- input$hy_x
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+  yl <- if (input$hy_f == "tanh") c(-1.5, 1.5) else c(-6, 10.5)
+  plot(x, f(x), type = "l", lwd = 3, col = "steelblue", ylim = yl, xlab = "x", ylab = "y",
+       main = sprintf("y = %s x", input$hy_f))
+  abline(h = 0, v = 0, col = "grey70")
+  if (input$hy_parts && input$hy_f != "tanh") {
+    lines(x, exp(x) / 2, lty = 2, col = "darkgreen", lwd = 2)
+    lines(x, if (input$hy_f == "cosh") exp(-x) / 2 else -exp(-x) / 2, lty = 2, col = "orange", lwd = 2)
+    legend("topleft", bty = "n", lty = 2, lwd = 2, col = c("darkgreen", "orange"),
+           legend = c("e^x / 2", if (input$hy_f == "cosh") "e^(-x) / 2" else "-e^(-x) / 2"))
+  }
+  if (input$hy_f == "tanh") abline(h = c(-1, 1), lty = 2, col = "firebrick")
+  points(x0, f(x0), pch = 19, col = "firebrick", cex = 1.8)
+  plot(x, cosh(x)^2, type = "l", lwd = 3, col = "steelblue", ylim = c(0, 25),
+       xlab = "x", ylab = "y", main = "cosh^2 x (blue) and sinh^2 x (red)")
+  lines(x, sinh(x)^2, lwd = 3, col = "firebrick")
+  segments(x0, sinh(x0)^2, x0, cosh(x0)^2, lwd = 4, col = "darkgreen")
+  text(x0, (sinh(x0)^2 + cosh(x0)^2) / 2, "gap = 1", pos = 4, col = "darkgreen", font = 2)
+}, height = 380)
+renderText({
+  x0 <- input$hy_x
+  sprintf("cosh %.2f = %.4f,  sinh %.2f = %.4f,  tanh %.2f = %.4f.   cosh^2 - sinh^2 = %.6f.   Compare cos^2 + sin^2 = %.6f.",
+          x0, cosh(x0), x0, sinh(x0), x0, tanh(x0), cosh(x0)^2 - sinh(x0)^2, cos(x0)^2 + sin(x0)^2)
+})
+```
+
+**Key facts.** $\cosh$ is even with minimum $\cosh 0 = 1$; $\sinh$ is odd and increasing; $\tanh$ is odd with range $(-1, 1)$. The derivatives have **no minus signs**: $\frac{d}{dx}\cosh x = \sinh x$ and $\frac{d}{dx}\sinh x = \cosh x$ (compare $\frac{d}{dx}\cos x = -\sin x$).
+
+## Why "hyperbolic"? The circle and the hyperbola
+
+**The idea.** $(\cos t, \sin t)$ lies on the circle $x^2 + y^2 = 1$; $(\cosh t, \sinh t)$ lies on the right branch of the hyperbola $x^2 - y^2 = 1$. In both cases the parameter $t$ is **twice the shaded area** swept out from $(1, 0)$. For the circle this is just "sector area $= \frac12 r^2 t$"; for the hyperbola $t$ cannot be an angle, but the area still works.
+
+**Try this.** Move $t$ and read off the two shaded areas, computed directly from the polygon (shoelace formula). Both equal $t/2$.
+
+```{r}
+inputPanel(
+  sliderInput("hc_t", "Parameter t", min = -2.5, max = 2.5, value = 1, step = 0.05,
+              animate = animationOptions(interval = 150))
+)
+renderPlot({
+  t <- input$hc_t; s <- seq(0, t, length.out = 200)
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+  plot(NA, xlim = c(-1.4, 1.4), ylim = c(-1.4, 1.4), asp = 1, xlab = "x", ylab = "y",
+       main = "x^2 + y^2 = 1:  (cos t, sin t)")
+  abline(h = 0, v = 0, col = "grey70")
+  a <- seq(0, 2 * pi, length.out = 400); lines(cos(a), sin(a), lwd = 2)
+  polygon(c(0, cos(s)), c(0, sin(s)), col = adjustcolor("steelblue", 0.35), border = NA)
+  segments(0, 0, cos(t), sin(t), lwd = 2); points(cos(t), sin(t), pch = 19, col = "firebrick", cex = 1.6)
+  L <- max(2, abs(sinh(t)) + 0.4)
+  plot(NA, xlim = c(-0.3, max(2, cosh(t) + 0.3)), ylim = c(-L, L), asp = 1, xlab = "x", ylab = "y",
+       main = "x^2 - y^2 = 1:  (cosh t, sinh t)")
+  abline(h = 0, v = 0, col = "grey70"); abline(0, 1, lty = 3); abline(0, -1, lty = 3)
+  u <- seq(-3, 3, length.out = 400); lines(cosh(u), sinh(u), lwd = 2)
+  polygon(c(0, cosh(s)), c(0, sinh(s)), col = adjustcolor("firebrick", 0.35), border = NA)
+  segments(0, 0, cosh(t), sinh(t), lwd = 2); points(cosh(t), sinh(t), pch = 19, col = "firebrick", cex = 1.6)
+}, height = 380)
+renderText({
+  t <- input$hc_t; s <- seq(0, t, length.out = 2000)
+  shoelace <- function(x, y) abs(sum(x * c(y[-1], y[1]) - c(x[-1], x[1]) * y)) / 2
+  sprintf("t/2 = %.4f.   Circle sector area = %.4f.   Hyperbolic sector area = %.4f.   Point on hyperbola: (%.3f, %.3f).",
+          abs(t) / 2, shoelace(c(0, cos(s)), c(0, sin(s))),
+          shoelace(c(0, cosh(s)), c(0, sinh(s))), cosh(t), sinh(t))
+})
+```
+
+**Proof idea.** The hyperbolic sector is the triangle from the origin to $(\cosh t, 0)$ to $(\cosh t, \sinh t)$, minus the region under the hyperbola from $x = 1$ to $x = \cosh t$:
+$$\tfrac12\cosh t\,\sinh t - \int_0^t \sinh^2 u\,du = \tfrac12\cosh t\sinh t - \Big[\tfrac14\sinh 2u - \tfrac u2\Big]_0^t = \frac t2,$$
+using the substitution $x = \cosh u$ and $\sinh^2 u = \frac12(\cosh 2u - 1)$.
+
+# The bridge: trigonometric and hyperbolic functions are the same functions
+
+## Osborn's rule
+
+**The idea.** Put $x \mapsto ix$ in the exponential definitions:
+$$\cos(ix) = \frac{e^{-x} + e^{x}}{2} = \cosh x, \qquad \sin(ix) = \frac{e^{-x} - e^{x}}{2i} = i\sinh x.$$
+So every trig identity becomes a hyperbolic one by substituting $ix$. Since $\sin(ix) = i\sinh x$, any **product of two sines** picks up $i^2 = -1$. That is **Osborn's rule**: replace $\cos \to \cosh$ and $\sin \to \sinh$, then **change the sign of every term containing a product of two sinh's** (including the hidden one in $\tan^2 = \frac{\sin^2}{\cos^2}$).
+
+**Try this.** Pick an identity. The table checks both versions at your chosen $x$. Notice which signs flip and which do not: $\sinh 2x = 2\sinh x\cosh x$ keeps its sign (one sinh), but $\sin^3 x$ flips (it hides $\sin x \cdot \sin^2 x$).
+
+```{r}
+inputPanel(
+  selectInput("os_id", "Identity", choices = names(osborn), selected = "Double angle (cos)"),
+  sliderInput("os_x", "x", min = -1.5, max = 1.5, value = 0.6, step = 0.05)
+)
+renderTable({
+  id <- osborn[[input$os_id]]; x <- input$os_x
+  data.frame(Version = c("Trigonometric", "Hyperbolic (Osborn)"),
+             Identity = c(id$trig, id$hyp),
+             LHS = c(id$tl(x), id$hl(x)), RHS = c(id$tr(x), id$hr(x)))
+}, digits = 6)
+renderText({
+  x <- input$os_x
+  sprintf("Complex check at x = %.2f:  cos(ix) = %s and cosh x = %.5f;   sin(ix) = %s and i sinh x = %.5fi.",
+          x, fmt_z(cos(1i * x)), cosh(x), fmt_z(sin(1i * x)), sinh(x))
+})
+```
+
+**Warning.** Osborn's rule is a *mnemonic*. In an exam that says "prove from the definitions", you must work with $e^x$ and $e^{-x}$ directly.
+
+## The picture: cos maps lines to ellipses and hyperbolas
+
+**The idea.** Using the compound angle formula with $\cos(iy) = \cosh y$ and $\sin(iy) = i\sinh y$:
+$$\cos(x + iy) = \cos x\cosh y - i\sin x\sinh y.$$
+Fix $y = y_0$ and let $x$ vary: $\big(\cos x \cosh y_0,\; -\sin x\sinh y_0\big)$ traces an **ellipse** with semi-axes $\cosh y_0$ and $\sinh y_0$. Its foci are at $\pm\sqrt{\cosh^2 y_0 - \sinh^2 y_0} = \pm 1$, **because** $\cosh^2 - \sinh^2 = 1$.
+Fix $x = x_0$ and let $y$ vary: $\big(\cos x_0\cosh y,\; -\sin x_0\sinh y\big)$ traces a **hyperbola** with foci at $\pm\sqrt{\cos^2 x_0 + \sin^2 x_0} = \pm 1$, **because** $\cos^2 + \sin^2 = 1$.
+
+So the two Pythagorean identities are the reason that a grid of horizontal and vertical lines is mapped by $\cos$ to a family of **confocal** ellipses and hyperbolas, all with foci $\pm 1$.
+
+**Try this.** Press play on $y_0$: the red line rises and its image ellipse inflates from the segment $[-1, 1]$. Move $x_0$: the blue line's image swings from one hyperbola branch to the other, straightening to the imaginary axis at $x_0 = 90°$.
+
+```{r}
+inputPanel(
+  sliderInput("cm_y", "Horizontal line Im z = y0", min = 0, max = 2, value = 0.8, step = 0.05,
+              animate = animationOptions(interval = 200)),
+  sliderInput("cm_x", "Vertical line Re z = x0 (degrees)", min = 5, max = 175, value = 60, step = 5)
+)
+renderPlot({
+  y0 <- input$cm_y; x0 <- input$cm_x * pi / 180
+  xs <- seq(-pi, pi, length.out = 300); ys <- seq(-2, 2, length.out = 300)
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+  plot(NA, xlim = c(-pi, pi), ylim = c(-2.2, 2.2), asp = 1, xlab = "x = Re z", ylab = "y = Im z",
+       main = "z-plane: a grid of lines")
+  abline(h = seq(0.2, 2, 0.2), col = "grey85"); abline(v = seq(15, 165, 15) * pi / 180, col = "grey85")
+  abline(h = 0, v = 0, col = "grey60")
+  segments(-pi, y0, pi, y0, lwd = 3, col = "firebrick")
+  segments(x0, -2, x0, 2, lwd = 3, col = "steelblue")
+  plot(NA, xlim = c(-4, 4), ylim = c(-3.8, 3.8), asp = 1, xlab = "Re cos z", ylab = "Im cos z",
+       main = "w = cos z: confocal ellipses and hyperbolas")
+  abline(h = 0, v = 0, col = "grey60")
+  for (yy in seq(0.2, 2, 0.2)) { w <- cos(complex(real = xs, imaginary = yy)); lines(Re(w), Im(w), col = "grey85") }
+  for (xx in seq(15, 165, 15) * pi / 180) { w <- cos(complex(real = xx, imaginary = ys)); lines(Re(w), Im(w), col = "grey85") }
+  w <- cos(complex(real = xs, imaginary = y0)); lines(Re(w), Im(w), lwd = 3, col = "firebrick")
+  w <- cos(complex(real = x0, imaginary = ys)); lines(Re(w), Im(w), lwd = 3, col = "steelblue")
+  points(c(-1, 1), c(0, 0), pch = 19, cex = 1.5); text(c(-1, 1), c(0, 0), c("-1", "1"), pos = 1, font = 2)
+}, height = 380)
+renderText({
+  y0 <- input$cm_y; x0 <- input$cm_x * pi / 180
+  sprintf("Red ellipse: semi-axes cosh y0 = %.3f and sinh y0 = %.3f; cosh^2 - sinh^2 = %.3f, so foci at +/-1.   Blue hyperbola: cos^2 x0 + sin^2 x0 = %.3f, so foci at +/-1 too.",
+          cosh(y0), sinh(y0), cosh(y0)^2 - sinh(y0)^2, cos(x0)^2 + sin(x0)^2)
+})
+```
+
+**A payoff.** $\cos z = 2$ has no real solution, but it has complex ones. From the formula above, the imaginary part $-\sin x\sinh y = 0$ and the real part $\cos x\cosh y = 2$ force $\sin x = 0$, $\cos x = 1$ and $\cosh y = 2$, so $z = 2k\pi \pm i\ln(2 + \sqrt3)$. In the picture, these are the points where the ellipse for $y_0 = \ln(2 + \sqrt3) \approx 1.317$ crosses the real axis at 2.
+
+# Inverse hyperbolic functions and calculus
+
+## Logarithmic forms
+
+**The idea.** Because the hyperbolic functions are built from $e^x$, their inverses are built from $\ln$. To invert $y = \sinh^{-1} x$, write $x = \sinh y$, so $e^{2y} - 2xe^y - 1 = 0$, a quadratic in $e^y$. Taking the positive root (since $e^y > 0$):
+$$\operatorname{arsinh} x = \ln\big(x + \sqrt{x^2+1}\big), \qquad \operatorname{arcosh} x = \ln\big(x + \sqrt{x^2-1}\big)\ (x \ge 1), \qquad \operatorname{artanh} x = \tfrac12\ln\frac{1+x}{1-x}\ (|x| < 1).$$
+$\cosh$ is not one-to-one, so $\operatorname{arcosh}$ takes the non-negative value; the full solution of $\cosh y = x$ is $y = \pm\ln\big(x + \sqrt{x^2-1}\big)$.
+
+**Try this.** Each inverse is the reflection of its function in $y = x$. Move the point and compare the log formula with R's built-in value.
+
+```{r}
+inputPanel(
+  radioButtons("inv_f", "Function pair",
+               c("sinh / arsinh" = "sinh", "cosh (x >= 0) / arcosh" = "cosh", "tanh / artanh" = "tanh")),
+  sliderInput("inv_x", "x (input to the inverse)", min = -3, max = 3, value = 1.5, step = 0.05)
+)
+renderPlot({
+  type <- input$inv_f
+  f  <- switch(type, sinh = sinh, cosh = cosh, tanh = tanh)
+  fi <- switch(type, sinh = asinh, cosh = acosh, tanh = atanh)
+  dom <- switch(type, sinh = c(-2, 2), cosh = c(0, 2), tanh = c(-2.5, 2.5))
+  x0 <- switch(type, sinh = input$inv_x, cosh = max(1, abs(input$inv_x)),
+               tanh = max(-0.95, min(0.95, input$inv_x)))
+  u <- seq(dom[1], dom[2], length.out = 400)
+  par(mar = c(4.5, 4.5, 3, 1))
+  plot(u, f(u), type = "l", lwd = 3, col = "steelblue", xlim = c(-3.7, 3.7), ylim = c(-3.7, 3.7),
+       asp = 1, xlab = "x", ylab = "y", main = sprintf("%s (blue) and its inverse (red)", type))
+  lines(f(u), u, lwd = 3, col = "firebrick")
+  abline(0, 1, lty = 3); abline(h = 0, v = 0, col = "grey70")
+  points(x0, fi(x0), pch = 19, col = "firebrick", cex = 1.6)
+  points(fi(x0), x0, pch = 19, col = "steelblue", cex = 1.6)
+  segments(x0, fi(x0), fi(x0), x0, lty = 2)
+}, height = 420)
+renderText({
+  type <- input$inv_f
+  x0 <- switch(type, sinh = input$inv_x, cosh = max(1, abs(input$inv_x)),
+               tanh = max(-0.95, min(0.95, input$inv_x)))
+  switch(type,
+    sinh = sprintf("arsinh %.2f: ln(x + sqrt(x^2 + 1)) = %.6f;  built-in asinh = %.6f.", x0, log(x0 + sqrt(x0^2 + 1)), asinh(x0)),
+    cosh = sprintf("arcosh %.2f: ln(x + sqrt(x^2 - 1)) = %.6f;  built-in acosh = %.6f.  (Both solutions of cosh y = x: y = +/-%.4f.)",
+                   x0, log(x0 + sqrt(x0^2 - 1)), acosh(x0), acosh(x0)),
+    tanh = sprintf("artanh %.2f: (1/2) ln((1 + x)/(1 - x)) = %.6f;  built-in atanh = %.6f.", x0, 0.5 * log((1 + x0) / (1 - x0)), atanh(x0)))
+})
+```
+
+## Integrals that give inverse functions
+
+**The idea.** Differentiating the inverses gives three integrals that look alike but give different families:
+$$\int\frac{dx}{\sqrt{1 - x^2}} = \arcsin x + c, \qquad \int\frac{dx}{\sqrt{1 + x^2}} = \operatorname{arsinh} x + c, \qquad \int\frac{dx}{\sqrt{x^2 - 1}} = \operatorname{arcosh} x + c.$$
+The sign pattern under the root picks the substitution: $x = \sin u$ uses $1 - \sin^2 = \cos^2$; $x = \sinh u$ uses $1 + \sinh^2 = \cosh^2$; $x = \cosh u$ uses $\cosh^2 - 1 = \sinh^2$. With a constant $a$: $\int\frac{dx}{\sqrt{a^2 + x^2}} = \operatorname{arsinh}\frac{x}{a} + c$.
+
+**Try this.** The shaded area (computed numerically) always equals the closed form on the right. Notice the arcsin case stops at $x = 1$, while arsinh carries on growing like $\ln 2x$.
+
+```{r}
+inputPanel(
+  radioButtons("int_f", "Integrand",
+               c("1/sqrt(1 + u^2)  ->  arsinh" = "sinh",
+                 "1/sqrt(u^2 - 1)  ->  arcosh" = "cosh",
+                 "1/sqrt(1 - u^2)  ->  arcsin" = "sin")),
+  sliderInput("int_X", "Upper limit (shifted to fit each domain)", min = 0.05, max = 4, value = 1.5, step = 0.05)
+)
+integral_setup <- reactive({
+  X <- input$int_X
+  switch(input$int_f,
+    sinh = list(f = function(u) 1 / sqrt(1 + u^2), lo = 0, up = X, F = asinh,
+                name = "arsinh", xr = c(0, 4.2)),
+    cosh = list(f = function(u) 1 / sqrt(u^2 - 1), lo = 1, up = 1 + X, F = acosh,
+                name = "arcosh", xr = c(1, 5.2)),
+    sin  = list(f = function(u) 1 / sqrt(1 - u^2), lo = 0, up = min(X, 0.99), F = asin,
+                name = "arcsin", xr = c(0, 1)))
+})
+renderPlot({
+  d <- integral_setup()
+  u <- seq(d$xr[1] + 1e-3, d$xr[2] - if (d$name == "arcsin") 1e-3 else 0, length.out = 500)
+  s <- seq(d$lo + 1e-4, d$up, length.out = 300)
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+  plot(u, d$f(u), type = "l", lwd = 3, col = "steelblue", ylim = c(0, 3),
+       xlab = "u", ylab = "integrand", main = "Area under the integrand")
+  polygon(c(d$lo, s, d$up), c(0, d$f(s), 0), col = adjustcolor("steelblue", 0.35), border = NA)
+  plot(u, d$F(u), type = "l", lwd = 3, col = "firebrick", xlab = "X",
+       ylab = d$name, main = sprintf("%s X: the accumulated area", d$name))
+  points(d$up, d$F(d$up), pch = 19, cex = 1.6)
+}, height = 360)
+renderText({
+  d <- integral_setup()
+  area <- integrate(d$f, d$lo, d$up)$value
+  sprintf("Numerical area from %g to %.2f = %.6f.   %s(%.2f) = %.6f.", d$lo, d$up, area, d$name, d$up, d$F(d$up))
+})
+```
+
+**Derivatives to know.**
+
+| $f(x)$ | $f'(x)$ | $f(x)$ | $f'(x)$ |
+|---|---|---|---|
+| $\sinh x$ | $\cosh x$ | $\operatorname{arsinh} x$ | $\dfrac{1}{\sqrt{x^2+1}}$ |
+| $\cosh x$ | $\sinh x$ | $\operatorname{arcosh} x$ | $\dfrac{1}{\sqrt{x^2-1}}$ |
+| $\tanh x$ | $\operatorname{sech}^2 x$ | $\operatorname{artanh} x$ | $\dfrac{1}{1-x^2}$ |
+
+# Comparing trigonometric and hyperbolic functions
+
+```{r}
+renderPlot({
+  par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+  x <- seq(-2 * pi, 2 * pi, length.out = 600)
+  plot(x, cos(x), type = "l", lwd = 2, col = "steelblue", ylim = c(-1.5, 1.5),
+       xlab = "theta", ylab = "", main = "From e^(i theta): bounded, periodic")
+  lines(x, sin(x), lwd = 2, col = "firebrick"); abline(h = 0, col = "grey70")
+  legend("bottomleft", bty = "n", lwd = 2, col = c("steelblue", "firebrick"), legend = c("cos", "sin"))
+  x <- seq(-2.5, 2.5, length.out = 600)
+  plot(x, cosh(x), type = "l", lwd = 2, col = "steelblue", ylim = c(-6, 6),
+       xlab = "x", ylab = "", main = "From e^x: unbounded, not periodic")
+  lines(x, sinh(x), lwd = 2, col = "firebrick"); abline(h = 0, col = "grey70")
+  legend("bottomright", bty = "n", lwd = 2, col = c("steelblue", "firebrick"), legend = c("cosh", "sinh"))
+}, height = 320)
+```
+
+| | **Trigonometric** | **Hyperbolic** |
+|---|---|---|
+| Built from | $e^{i\theta}$ | $e^{x}$ |
+| Definitions | $\cos\theta = \frac{e^{i\theta}+e^{-i\theta}}{2}$, $\sin\theta = \frac{e^{i\theta}-e^{-i\theta}}{2i}$ | $\cosh x = \frac{e^{x}+e^{-x}}{2}$, $\sinh x = \frac{e^{x}-e^{-x}}{2}$ |
+| Curve traced | circle $x^2 + y^2 = 1$ | hyperbola $x^2 - y^2 = 1$ |
+| Pythagorean identity | $\cos^2 + \sin^2 = 1$ | $\cosh^2 - \sinh^2 = 1$ |
+| Derivatives | $(\cos)' = -\sin$, $(\sin)' = \cos$ | $(\cosh)' = \sinh$, $(\sinh)' = \cosh$ |
+| Periodic? | yes, period $2\pi$ | no (period $2\pi i$ in the complex plane) |
+| Inverse via | angles | logarithms |
+| Link | $\cos(ix) = \cosh x$, $\sin(ix) = i\sinh x$ | $\cosh(ix) = \cos x$, $\sinh(ix) = i\sin x$ |
+
+**The common lesson.** There are not two families of functions but one. Along the real axis, $\cos$ oscillates; along the imaginary axis, the same function grows like $\cosh$. The Pythagorean identity, the double-angle formulae and the calculus all transfer through the single substitution $x \mapsto ix$, with the signs controlled by $i^2 = -1$. When a hyperbolic result looks unfamiliar, ask: *what is the trigonometric version, and where does the sign change?*
+
+# Practice questions
+
+Try each question before reading the answer.
+
+**Year 1**
+
+1. **Find the square roots of $5 + 12i$.** Set $(a + bi)^2 = 5 + 12i$: $a^2 - b^2 = 5$, $ab = 6$, and $a^2 + b^2 = |5 + 12i| = 13$. So $a^2 = 9$, giving $\pm(3 + 2i)$.
+2. **Given that $2 - 3i$ is a root of $z^3 - 6z^2 + 21z - 26 = 0$, find the other roots.** $2 + 3i$ is also a root (real coefficients), giving the factor $z^2 - 4z + 13$. Dividing leaves $z - 2$, so the roots are $2 \pm 3i$ and $2$.
+3. **Find a Cartesian equation for $|z - 3i| = |z + 1|$.** Squaring: $x^2 + (y - 3)^2 = (x + 1)^2 + y^2$, so $x + 3y = 4$: the perpendicular bisector of $3i$ and $-1$.
+4. **Shade the region where $|z - 2| \le 2$ and $\frac{\pi}{4} \le \arg z \le \frac{\pi}{2}$.** The part of the disc (centre 2, radius 2) between the line $y = x$ and the positive imaginary axis. The disc touches the imaginary axis only at $0$, so the region is the segment of the disc above $y = x$, from $0$ to $2 + 2i$.
+
+**Year 2: complex numbers**
+
+5. **Express $\cos 5\theta$ in powers of $\cos\theta$.** $\cos 5\theta = 16\cos^5\theta - 20\cos^3\theta + 5\cos\theta$. (Check with $n = 5$ in the multiple-angle explorer.)
+6. **Find $\int_0^{\pi/2}\cos^4\theta\,d\theta$.** Using $\cos^4\theta = \frac18(\cos 4\theta + 4\cos 2\theta + 3)$, the answer is $\frac{3\pi}{16}$.
+7. **Solve $z^5 = 16 + 16\sqrt3\,i$.** $|w| = 32$ and $\arg w = \frac{\pi}{3}$, so $z = 2e^{i\theta}$ with $\theta = -\frac{11\pi}{15}, -\frac{\pi}{3}, \frac{\pi}{15}, \frac{7\pi}{15}, \frac{13\pi}{15}$.
+8. **Show that $\sum_{k=0}^{n-1}\sin k\theta = \frac{\sin(n\theta/2)\sin((n-1)\theta/2)}{\sin(\theta/2)}$.** Take the imaginary part of $C + iS$ in the trigonometric series section.
+
+**Hyperbolic functions**
+
+9. **Prove $\cosh 2x = 1 + 2\sinh^2 x$ from the definitions.** $1 + 2\cdot\frac{e^{2x} - 2 + e^{-2x}}{4} = \frac{e^{2x} + e^{-2x}}{2} = \cosh 2x$. Then check that Osborn's rule turns $\cos 2x = 1 - 2\sin^2 x$ into the same result.
+10. **Solve $2\cosh x - \sinh x = 2$.** Substituting definitions: $\frac12e^x + \frac32e^{-x} = 2$, so $e^{2x} - 4e^x + 3 = 0$. Hence $e^x = 1$ or $3$, giving $x = 0$ or $x = \ln 3$.
+11. **Evaluate $\int_0^2\frac{dx}{\sqrt{x^2 + 4}}$.** $\big[\operatorname{arsinh}\frac x2\big]_0^2 = \operatorname{arsinh} 1 = \ln(1 + \sqrt2)$.
+12. **Show that $\frac{d}{dx}\operatorname{arsinh} x = \frac{1}{\sqrt{1 + x^2}}$.** If $y = \operatorname{arsinh} x$ then $x = \sinh y$, so $\frac{dx}{dy} = \cosh y = \sqrt{1 + \sinh^2 y} = \sqrt{1 + x^2}$ (positive root, since $\cosh y > 0$).
+
+**Stretch: linking the two**
+
+13. **Show that $\cos(iz) = \cosh z$, and hence solve $\cos z = 2$.** From the exponential definitions, $\cos(iz) = \frac{e^{-z} + e^{z}}{2} = \cosh z$. For $\cos z = 2$, use $\cos(x + iy) = \cos x\cosh y - i\sin x\sinh y$: the solutions are $z = 2k\pi \pm i\ln(2 + \sqrt3)$, $k \in \mathbb Z$.
+14. **Why is $\cosh$ periodic with period $2\pi i$?** $\cosh(x + 2\pi i) = \frac{e^{x}e^{2\pi i} + e^{-x}e^{-2\pi i}}{2} = \cosh x$, since $e^{2\pi i} = 1$. The "missing" periodicity of the hyperbolic functions is in the imaginary direction.
+
+*Further reading:* Tristan Needham, *Visual Complex Analysis*, Chapters 1–2, for the geometric view of complex multiplication and the complex exponential used throughout this guide.
